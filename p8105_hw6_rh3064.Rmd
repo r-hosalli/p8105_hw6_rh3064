@@ -5,21 +5,22 @@ date: "`r Sys.Date()`"
 output: github_document
 ---
 
-### Dependencies
-
 ```{r include=FALSE}
 library(tidyverse)
 library(rvest)
 library(httr)
+library(modelr)
 ```
 
 ## Problem 2
 
+### Data Loading and Tidying
+
 The data is loaded and a `city_check()` function is created to check cities and states in the dataset.
 
 ```{r}
-url = "https://raw.githubusercontent.com/washingtonpost/data-homicides/cbcb572ed1a3c3f10d6dfe07e84464a28986173e/homicide-data.csv"
-wphom_df <- read_csv(url)
+url1 = "https://raw.githubusercontent.com/washingtonpost/data-homicides/cbcb572ed1a3c3f10d6dfe07e84464a28986173e/homicide-data.csv"
+wphom_df <- read_csv(url1)
 
 city_check <- function(df){
   df_sum <- df %>% 
@@ -170,3 +171,92 @@ wphom_city %>%
 ```
 
 Most cities have an adjusted odds ratio of solved homicide in males vs. female \<1, which indicates that odds of a homicide being resolved for a male victim in these cities is less than the odds of a homicide being resolved for a female victim in these cities. No cities with an adjusted OR greater than 1 had a 95% confidence interval that did not include the null (i.e. OR =1), indicating that the OR is not likely to be statistically significant. New York had the lowest OR, while Albuquerque had the highest OR.
+
+## Problem 3
+
+### Data Loading & Tidying
+
+The data is loading with `read_csv()` and missing values are checked for with `apply()` , specifying using `which()` across the columns of the `is.na()` matrix. Parity only has a few entries that are \>0, so a new binary parity variable is created. Categorical variables are coerced into factors using `across()` and `as.factor()` inside `mutate()`
+
+```{r}
+url2 = "https://p8105.com/data/birthweight.csv"
+
+bw_df <- read_csv(url2)
+
+apply(is.na(bw_df), 2, which)
+
+
+tibble(
+  variable = colnames(bw_df),
+  sapply(bw_df, class)) %>%
+  knitr::kable()
+
+bw_tidy <- bw_df %>%
+  mutate(parity_bin = case_when(parity == 0 ~ 0,
+                                          TRUE ~ 1)
+         ) %>%
+  mutate(
+    across(c(babysex, frace, malform, mrace, parity_bin), as.factor)
+    )  
+
+tibble(
+  variable = colnames(bw_tidy),
+  sapply(bw_tidy, class)) %>%
+  knitr::kable()
+```
+
+From a quick PubMed search, it looks like maternal smoking, pre-pregnancy weight and maternal race are associated risk factors for low birthweight, and will be included in the model. From a quick visual check of scatterplots, gestational age may also be associated and will be included in the model.
+
+```{r}
+bw_tidy %>% ggplot(aes(x = gaweeks, y = bwt)) +
+  geom_point()
+```
+
+A plot of residuals against fitted values was created.
+
+```{r}
+model1 <- lm(bwt ~ smoken + delwt + gaweeks + mrace, data = bw_tidy)
+
+bw_tidy <- bw_tidy %>%
+  add_residuals(model1) %>%
+  add_predictions(model1)
+
+bw_tidy %>%
+  ggplot(aes(x=resid, y=pred)) +
+  geom_point()
+```
+
+The data was separated into testing and training sets using `crossv_mc()`. `map()` and `map2_dbl` were used to apply the three models to the separate training set and calculate the RMSE with the test set.
+
+```{r}
+cv_df <- crossv_mc(bw_tidy, 100) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble))
+
+cv_df <- cv_df %>%
+  mutate(
+    model1 = map(train, ~lm(bwt ~ smoken + delwt + gaweeks + mrace, data = .x)),
+    model2 = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    model3 = map(train, ~lm(bwt ~ bhead*blength*babysex, data = .x))
+  ) %>%
+  mutate(
+    rmse_model1 = map2_dbl(model1, test, ~rmse(model = .x, data = .y)),
+    rmse_model2 = map2_dbl(model2, test, ~rmse(model = .x, data = .y)),
+    rmse_model3 = map2_dbl(model3, test, ~rmse(model = .x, data = .y))
+  )
+```
+
+```{r}
+cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_violin()
+```
+
+The RMSE was pivoted to a wide format and a violin plot of the RMSE was created. Model 3, with the three-way interaction seems to be the best based on RMSE. My proposed model was clearly inferior.
