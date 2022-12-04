@@ -15,7 +15,7 @@ library(httr)
 
 ## Problem 2
 
-The data is loaded and a city_check function is created to check cities and states in the dataset.
+The data is loaded and a `city_check()` function is created to check cities and states in the dataset.
 
 ```{r}
 url = "https://raw.githubusercontent.com/washingtonpost/data-homicides/cbcb572ed1a3c3f10d6dfe07e84464a28986173e/homicide-data.csv"
@@ -34,7 +34,7 @@ city_check <- function(df){
 city_check(wphom_df)
 ```
 
-A New city_state variable is created, and WI is correct to be uppercase. A new binary resolved variable is created, and victim_age and victim_race are coerced into the correct type. Cities that do not report victim race are filtered out, along with victims that are neither black nor white. city_check is used to check if the filtering was performed correctly, along with count().
+A new city_state variable is created, and WI is correct to be uppercase. A new binary resolved variable is created, and victim_age, victim_sex and victim_race are coerced into the correct type. Cities that do not report victim race are filtered out, along with victims that are neither black nor white and victims with unknown sex. `city_check()` is used to check if the filtering was performed correctly, along with count().
 
 ```{r}
 wphom_tidy <- wphom_df%>% 
@@ -48,16 +48,125 @@ wphom_tidy <- wphom_df%>%
     
     resolved = as.numeric(disposition == "Closed by arrest"),
     victim_age = as.numeric(victim_age),
-    victim_race = fct_relevel(victim_race, "White")
+    victim_race = fct_relevel(victim_race, "White"),
+    victim_sex = fct_relevel(victim_sex, "Female")
   )
 
 wphom_final <- wphom_tidy %>%
   filter(!city_state %in%  c("Dallas, TX", "Phoenix, AZ", 
                          "Kansas City, MO", "Tulsa, AL") &
-         victim_race %in% c("Black", "White"))
+          victim_sex %in% c("Male", "Female") & 
+           victim_race %in% c("Black", "White"))
+
 city_check(wphom_final)
 wphom_final %>%
   group_by(victim_race) %>%
   count() %>%
   knitr::kable()
+wphom_final %>%
+  group_by(victim_sex) %>%
+  count() %>%
+  knitr::kable()
 ```
+
+### Baltimore
+
+The estimated OR and 95% confidence interval are calculated from the estimate and standard error and extracted from the output `glm()`.
+
+```{r}
+baltimore_df <- wphom_final %>%
+  filter(city_state == "Baltimore, MD")
+
+baltimore_model <- baltimore_df %>%
+  glm(resolved ~ victim_age+victim_sex+victim_race, data = ., family = binomial())
+
+balt_or <- baltimore_model %>%
+  broom::tidy() %>%
+  mutate(OR = exp(estimate),
+         CI_lower = exp((estimate - 1.96*std.error)),
+         CI_upper = exp((estimate + 1.96*std.error))
+         ) %>%
+  filter(term == "victim_sexMale") %>%
+  select(term, OR, CI_lower, CI_upper)
+
+balt_or %>% knitr::kable()
+```
+
+### All Cities
+
+The OR and 95%CI for Baltimore, MD are calculated from the output of `glm()`.
+
+```{r}
+glm_city <- function(x){
+   wphom_final %>%
+    filter(city_state == x) %>%
+    
+    glm(resolved ~ victim_age + victim_sex + victim_race, 
+        data =., 
+        family = binomial()) %>%
+    
+    broom::tidy() %>%
+    
+    mutate(OR = exp(estimate),
+         CI_lower = exp((estimate - 1.96*std.error)),
+         CI_upper = exp((estimate + 1.96*std.error))
+         ) %>%
+    
+    filter(term == "victim_sexMale") %>%
+    
+    select(OR, CI_lower, CI_upper)
+}
+```
+
+A function to generalize the above model was created.
+
+```{r}
+glm_homicide <- function(df){
+  
+  glm(resolved ~ victim_age + victim_race + victim_sex,
+      data = df,
+      family = binomial()) %>%
+    broom::tidy() %>%
+    mutate(OR = exp(estimate),
+         CI_lower = exp((estimate - 1.96*std.error)),
+         CI_upper = exp((estimate + 1.96*std.error))
+         ) %>%
+    
+    filter(term == "victim_sexMale") %>%
+    
+    select(OR, CI_lower, CI_upper)
+}
+```
+
+A new dataframe is created with `select()` and `nest()` to nest the data per city, and mutate is used to create a new column model, which is the above function applied to each city's data. `unnest()` is used to return a tidy data frame with the OR and 95% CI for each city.
+
+```{r}
+wphom_city <-  wphom_final %>%
+  select(city_state, victim_race:victim_sex, resolved) %>%
+  nest(data=victim_race:resolved) %>%
+  
+  mutate(
+    model = map(data, glm_homicide)
+  ) %>%
+  select(city_state, model) %>%
+  unnest(cols = model)
+
+wphom_city %>% knitr::kable()
+```
+
+### Plot
+
+```{r}
+wphom_city %>%
+  mutate(city_state = forcats::fct_reorder(city_state, OR)) %>%
+  ggplot(aes(x = city_state, y = OR)) + 
+    geom_hline(yintercept = 1, color = "red",
+               linetype = 'dashed')+
+  geom_point() +
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper)) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(title="OR of Solved Homicide by Sex (Male vs Female) Adjusted for Sex & Age by City",
+        x ="City", y = "Adjusted OR")
+```
+
+Most cities have an adjusted odds ratio of solved homicide in males vs. female \<1, which indicates that odds of a homicide being resolved for a male victim in these cities is less than the odds of a homicide being resolved for a female victim in these cities. No cities with an adjusted OR greater than 1 had a 95% confidence interval that did not include the null (i.e. OR =1), indicating that the OR is not likely to be statistically significant. New York had the lowest OR, while Albuquerque had the highest OR.
