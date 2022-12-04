@@ -1,0 +1,63 @@
+---
+title: "p8105_hw6_rh3064.Rmd"
+author: "Rahul Hosalli"
+date: "`r Sys.Date()`"
+output: github_document
+---
+
+### Dependencies
+
+```{r include=FALSE}
+library(tidyverse)
+library(rvest)
+library(httr)
+```
+
+## Problem 2
+
+The data is loaded and a city_check function is created to check cities and states in the dataset.
+
+```{r}
+url = "https://raw.githubusercontent.com/washingtonpost/data-homicides/cbcb572ed1a3c3f10d6dfe07e84464a28986173e/homicide-data.csv"
+wphom_df <- read_csv(url)
+
+city_check <- function(df){
+  df_sum <- df %>% 
+    group_by(state) %>% 
+    count(city)
+  
+  df_sum %>% 
+    knitr::kable()
+}
+
+
+city_check(wphom_df)
+```
+
+A New city_state variable is created, and WI is correct to be uppercase. A new binary resolved variable is created, and victim_age and victim_race are coerced into the correct type. Cities that do not report victim race are filtered out, along with victims that are neither black nor white. city_check is used to check if the filtering was performed correctly, along with count().
+
+```{r}
+wphom_tidy <- wphom_df%>% 
+  mutate(
+    state = case_when(
+      city == "Milwaukee" ~ "WI",
+      TRUE ~ state
+    ),
+    
+    city_state = paste(city, state, sep = ", "),
+    
+    resolved = as.numeric(disposition == "Closed by arrest"),
+    victim_age = as.numeric(victim_age),
+    victim_race = fct_relevel(victim_race, "White")
+  )
+
+wphom_final <- wphom_tidy %>%
+  filter(!city_state %in%  c("Dallas, TX", "Phoenix, AZ", 
+                         "Kansas City, MO", "Tulsa, AL") &
+         victim_race %in% c("Black", "White"))
+city_check(wphom_final)
+wphom_final %>%
+  group_by(victim_race) %>%
+  count() %>%
+  knitr::kable()
+```
